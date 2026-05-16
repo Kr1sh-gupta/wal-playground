@@ -133,7 +133,7 @@ app.get('/api/wal/records', async (req, res) => {
       await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_walinspect`);
       const r = await pool.query(`
         SELECT
-          lsn,
+          start_lsn AS lsn,
           xid,
           resource_manager AS rmgr,
           record_type,
@@ -142,10 +142,10 @@ app.get('/api/wal/records', async (req, res) => {
           fpi_length,
           description
         FROM pg_get_wal_records_info(
-          (SELECT lsn FROM pg_control_checkpoint()),
+          (SELECT checkpoint_lsn FROM pg_control_checkpoint()),
           pg_current_wal_lsn()
         )
-        ORDER BY lsn DESC
+        ORDER BY start_lsn DESC
         LIMIT 50
       `);
       res.json(r.rows);
