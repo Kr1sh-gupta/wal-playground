@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WAL Viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+  header { padding: 14px 24px; border-bottom: 1px solid #2d3748; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .lsn-badge { font-family: monospace; background: #1a2744; color: #60a5fa; padding: 4px 12px; border-radius: 6px; font-size: 13px; }
+  .tabs { display: flex; gap: 2px; padding: 12px 20px 0; border-bottom: 1px solid #2d3748; }
+  .tab { padding: 8px 18px; border-radius: 6px 6px 0 0; font-size: 13px; cursor: pointer; color: #94a3b8; border: 1px solid transparent; border-bottom: none; }
+  .tab.active { background: #1a1f2e; color: #e2e8f0; border-color: #2d3748; }
+  .tab-content { display: none; padding: 20px; }
+  .tab-content.active { display: block; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #1a1f2e; border: 1px solid #2d3748; border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 13px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
+  .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1e2533; font-size: 13px; }
+  .stat-row:last-child { border-bottom: none; }
+  .val { font-family: monospace; color: #60a5fa; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  button { padding: 7px 14px; border-radius: 6px; border: 1px solid #374151; background: #1e2533; color: #e2e8f0; cursor: pointer; font-size: 13px; transition: background .15s; }
+  button:hover { background: #2d3748; }
+  button.insert { border-color: #059669; color: #34d399; }
+  button.update { border-color: #d97706; color: #fbbf24; }
+  button.delete { border-color: #dc2626; color: #f87171; }
+  button.abort  { border-color: #7c3aed; color: #a78bfa; }
+  .result-box { background: #0d1117; border: 1px solid #2d3748; border-radius: 6px; padding: 10px 12px; font-family: monospace; font-size: 12px; color: #86efac; min-height: 60px; white-space: pre; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: #64748b; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #2d3748; position: sticky; top: 0; background: #1a1f2e; }
+  td { padding: 5px 8px; border-bottom: 1px solid #111827; font-family: monospace; vertical-align: top; }
+  tr:hover td { background: #1e2533; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .pill.pending { background: #1c2a1a; color: #4ade80; }
+  .pill.shipped { background: #1a2030; color: #60a5fa; }
+  .full { grid-column: 1 / -1; }
+  .rmgr-heap    { color: #34d399; }
+  .rmgr-transaction { color: #60a5fa; }
+  .rmgr-storage { color: #fbbf24; }
+  .rmgr-btree   { color: #a78bfa; }
+  .rmgr-default { color: #94a3b8; }
+  .wal-table-wrap { max-height: 500px; overflow-y: auto; border-radius: 8px; border: 1px solid #2d3748; }
+  .record-type { font-weight: 600; }
+  .desc-cell { color: #94a3b8; max-width: 300px; word-break: break-all; font-size: 11px; }
+  .filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .filter-row select, .filter-row input { background: #1e2533; border: 1px solid #374151; color: #e2e8f0; padding: 5px 10px; border-radius: 6px; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-left: 4px; }
+  .count-badge { background: #1e3a5f; color: #60a5fa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WAL Viewer</h1>
+  <span id="lsn-display" class="lsn-badge">LSN: loading…</span>
+  <span id="wal-file" style="font-size:12px;color:#64748b;margin-left:4px"></span>
+  <button onclick="refresh()" style="margin-left:auto">Refresh</button>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('dashboard')">Dashboard</div>
+  <div class="tab" onclick="showTab('wal-records')">WAL Records <span class="badge count-badge" id="record-count">0</span></div>
+  <div class="tab" onclick="showTab('wal-files')">WAL Files</div>
+  <div class="tab" onclick="showTab('tables')">Tables</div>
+</div>
+
+<div id="tab-dashboard" class="tab-content active">
+  <div class="grid">
+    <div class="card">
+      <h2>WAL Status</h2>
+      <div id="wal-status"></div>
+    </div>
+    <div class="card">
+      <h2>Checkpoint Stats</h2>
+      <div id="checkpoint-stats"></div>
+    </div>
+    <div class="card full">
+      <h2>Fire a transaction — watch LSN advance</h2>
+      <div class="btn-row">
+        <button class="insert" onclick="runTx('insert')">INSERT order</button>
+        <button class="update" onclick="runTx('update')">UPDATE → shipped</button>
+        <button class="delete" onclick="runTx('delete')">DELETE oldest</button>
+        <button class="abort"  onclick="runTx('abort')">ABORT (rollback)</button>
+      </div>
+      <div class="result-box" id="tx-result">Click a button to fire a transaction and see how many WAL bytes it generates.</div>
+    </div>
+  </div>
+</div>
+
+<div id="tab-wal-records" class="tab-content">
+  <div class="card full" style="margin-bottom:0;border-radius:10px">
+    <h2>Live WAL records <span style="font-weight:400;color:#64748b;text-transform:none;letter-spacing:0">(decoded from current WAL segment)</span></h2>
+    <div class="filter-row">
+      <label style="font-size:12px;color:#94a3b8">Filter by manager:</label>
+      <select id="rmgr-filter" onchange="filterRecords()">
+        <option value="">All</option>
+        <option value="Heap">Heap (INSERT/UPDATE/DELETE)</option>
+        <option value="Transaction">Transaction (COMMIT/ABORT)</option>
+        <option value="Btree">Btree (index)</option>
+        <option value="Storage">Storage</option>
+        <option value="XLOG">XLOG (checkpoint)</option>
+      </select>
+      <button onclick="loadWalRecords()" style="margin-left:auto">Reload records</button>
+    </div>
+    <div class="wal-table-wrap">
+      <table id="wal-records-table">
+        <thead>
+          <tr>
+            <th>LSN</th>
+            <th>XID</th>
+            <th>Resource manager</th>
+            <th>Record type</th>
+            <th>Length</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody id="wal-records-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="tab-wal-files" class="tab-content">
+  <div class="card">
+    <h2>WAL segment files on disk</h2>
+    <div class="wal-table-wrap">
+      <table id="wal-files-table">
+        <thead><tr><th>Filename</th><th>Size (bytes)</th><th>Last modified</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="tab-tables" class="tab-content">
+  <div class="grid">
+    <div class="card">
+      <h2>Orders</h2>
+      <table id="orders-table">
+        <thead><tr><th>ID</th><th>Product</th><th>Amount</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Inventory</h2>
+      <table id="inventory-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Stock</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let allRecords = [];
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['dashboard','wal-records','wal-files','tables'][i] === name));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'wal-records') loadWalRecords();
+}
+
+function rmgrClass(rmgr) {
+  if (!rmgr) return 'rmgr-default';
+  const r = rmgr.toLowerCase();
+  if (r.includes('heap')) return 'rmgr-heap';
+  if (r.includes('transaction')) return 'rmgr-transaction';
+  if (r.includes('storage')) return 'rmgr-storage';
+  if (r.includes('btree')) return 'rmgr-btree';
+  return 'rmgr-default';
+}
+
+async function loadWalRecords() {
+  const tbody = document.getElementById('wal-records-body');
+  tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;padding:16px">Loading WAL records…</td></tr>';
+  try {
+    const data = await fetch('/api/wal/records').then(r => r.json());
+    if (data.error) {
+      tbody.innerHTML = `<tr><td colspan="6" style="color:#f87171;padding:16px">Error: ${data.error}</td></tr>`;
+      return;
+    }
+    allRecords = data;
+    document.getElementById('record-count').textContent = data.length;
+    filterRecords();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:#f87171;padding:16px">Failed to load: ${e.message}</td></tr>`;
+  }
+}
+
+function filterRecords() {
+  const filter = document.getElementById('rmgr-filter').value.toLowerCase();
+  const filtered = filter ? allRecords.filter(r => r.rmgr && r.rmgr.toLowerCase().includes(filter)) : allRecords;
+  const tbody = document.getElementById('wal-records-body');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;padding:16px">No records match.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(r => `
+    <tr>
+      <td style="color:#60a5fa">${r.lsn}</td>
+      <td style="color:#fbbf24">${r.xid || '—'}</td>
+      <td class="${rmgrClass(r.rmgr)}">${r.rmgr || '—'}</td>
+      <td class="record-type">${r.record_type || '—'}</td>
+      <td style="color:#94a3b8">${r.record_length}</td>
+      <td class="desc-cell">${r.description || ''}</td>
+    </tr>`).join('');
+}
+
+async function refresh() {
+  const [status, cp, files, orders, inv] = await Promise.all([
+    fetch('/api/wal/status').then(r => r.json()),
+    fetch('/api/wal/checkpoints').then(r => r.json()),
+    fetch('/api/wal/files').then(r => r.json()),
+    fetch('/api/tables/orders').then(r => r.json()),
+    fetch('/api/tables/inventory').then(r => r.json()),
+  ]);
+
+  document.getElementById('lsn-display').textContent = 'LSN: ' + status.current_lsn;
+  document.getElementById('wal-file').textContent = status.wal_file;
+
+  document.getElementById('wal-status').innerHTML = [
+    ['Current LSN', status.current_lsn],
+    ['WAL file', status.wal_file],
+    ['Total bytes written', Number(status.bytes_written).toLocaleString()],
+    ['Replication slots', status.replication_slots],
+  ].map(([k,v]) => `<div class="stat-row"><span>${k}</span><span class="val">${v}</span></div>`).join('');
+
+  document.getElementById('checkpoint-stats').innerHTML = [
+    ['Checkpoints (timed)', cp.checkpoints_timed],
+    ['Checkpoints (req)', cp.checkpoints_req],
+    ['Write time (ms)', cp.checkpoint_write_time],
+    ['Sync time (ms)', cp.checkpoint_sync_time],
+    ['Buffers @ checkpoint', cp.buffers_checkpoint],
+    ['Buffers (backends)', cp.buffers_backend],
+  ].map(([k,v]) => `<div class="stat-row"><span>${k}</span><span class="val">${v}</span></div>`).join('');
+
+  const ftbody = document.querySelector('#wal-files-table tbody');
+  ftbody.innerHTML = files.map(f => `
+    <tr>
+      <td style="color:#a78bfa">${f.name}</td>
+      <td>${Number(f.size).toLocaleString()}</td>
+      <td>${new Date(f.modification).toLocaleTimeString()}</td>
+    </tr>`).join('');
+
+  const otbody = document.querySelector('#orders-table tbody');
+  otbody.innerHTML = orders.map(o => `
+    <tr>
+      <td>${o.id}</td><td>${o.product}</td>
+      <td>$${Number(o.amount).toFixed(2)}</td>
+      <td><span class="pill ${o.status}">${o.status}</span></td>
+    </tr>`).join('');
+
+  const itbody = document.querySelector('#inventory-table tbody');
+  itbody.innerHTML = inv.map(i => `
+    <tr><td>${i.product_id}</td><td>${i.name}</td><td>${i.stock}</td></tr>`).join('');
+}
+
+async function runTx(type) {
+  const box = document.getElementById('tx-result');
+  box.textContent = 'Running…';
+  const r = await fetch('/api/demo/transaction', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type })
+  }).then(r => r.json());
+  box.textContent =
+    `Operation:        ${r.operation.toUpperCase()}\n` +
+    `Before LSN:       ${r.before_lsn}\n` +
+    `After  LSN:       ${r.after_lsn}\n` +
+    `WAL bytes generated: ${Number(r.wal_bytes_generated).toLocaleString()} bytes`;
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

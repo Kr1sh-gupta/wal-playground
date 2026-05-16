@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: wal-postgres
+    environment:
+      POSTGRES_USER: waluser
+      POSTGRES_PASSWORD: walpass
+      POSTGRES_DB: waldb
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_wal_senders=3
+        -c max_replication_slots=3
+        -c log_checkpoints=on
+        -c checkpoint_timeout=30s
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - wal-lab
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waluser -d waldb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: wal-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@wal.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wal-lab
+
+  wal-viewer:
+    build: ./wal-viewer
+    container_name: wal-viewer
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: waluser
+      PG_PASSWORD: walpass
+      PG_DB: waldb
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wal-lab
+
+volumes:
+  pg_data:
+
+networks:
+  wal-lab:
+    driver: bridge
